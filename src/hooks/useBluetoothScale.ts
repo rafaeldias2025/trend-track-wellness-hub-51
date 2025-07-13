@@ -111,54 +111,83 @@ class OpenScaleMiParser {
         return null;
       }
 
-      // Try multiple weight extraction methods (different scale versions)
+      // Extrair peso usando múltiplos métodos para Mi Scale 2
       let weight = 0;
+      let validWeight = false;
       
-      // Method 1: Bytes 11-12 (most common for Mi Scale 2)
-      const weightRaw1 = data[11] | (data[12] << 8);
-      const weight1 = weightRaw1 / 200.0; // Updated to match display
-      
-      // Method 2: Different byte positions for older scales
-      const weightRaw2 = data[1] | (data[2] << 8);
-      const weight2 = weightRaw2 / 200.0; // Standard BLE format
-      
-      // Method 3: Alternative parsing
-      const weightRaw3 = data[12] | (data[13] << 8);
-      const weight3 = weightRaw3 / 200.0;
-      
-      console.log('Weight candidates:', weight1, weight2, weight3);
-      
-      // Choose the most reasonable weight
-      const candidates = [weight1, weight2, weight3].filter(w => w >= 2 && w <= 300);
-      
-      if (candidates.length === 0) {
-        console.log('No valid weight found');
-        return null;
+      // Método 1: Posição padrão para Mi Scale 2 (bytes 11-12)
+      if (data.length > 12) {
+        const weightRaw1 = data[11] | (data[12] << 8);
+        const weight1 = weightRaw1 / 200.0;
+        if (weight1 > 5 && weight1 < 300) {
+          weight = weight1;
+          validWeight = true;
+          console.log('Peso extraído (método 1):', weight);
+        }
       }
       
-      weight = candidates[0];
-      console.log('Selected weight:', weight);
+      // Método 2: Posição alternativa (bytes 1-2)
+      if (!validWeight && data.length > 2) {
+        const weightRaw2 = data[1] | (data[2] << 8);
+        const weight2 = weightRaw2 / 200.0;
+        if (weight2 > 5 && weight2 < 300) {
+          weight = weight2;
+          validWeight = true;
+          console.log('Peso extraído (método 2):', weight);
+        }
+      }
+      
+      // Método 3: Tentativa com divisão diferente
+      if (!validWeight && data.length > 12) {
+        const weightRaw3 = data[11] | (data[12] << 8);
+        const weight3 = weightRaw3 / 100.0;
+        if (weight3 > 5 && weight3 < 300) {
+          weight = weight3;
+          validWeight = true;
+          console.log('Peso extraído (método 3):', weight);
+        }
+      }
+      
+      // Método 4: Parsing direto dos bytes de dados (posições 9-10)
+      if (!validWeight && data.length > 10) {
+        const weightRaw4 = data[9] | (data[10] << 8);
+        const weight4 = weightRaw4 / 200.0;
+        if (weight4 > 5 && weight4 < 300) {
+          weight = weight4;
+          validWeight = true;
+          console.log('Peso extraído (método 4):', weight);
+        }
+      }
+      
+      if (!validWeight) {
+        console.log('Nenhum peso válido encontrado nos dados');
+        return null;
+      }
 
       const result: ScaleData = { weight: parseFloat(weight.toFixed(2)) };
 
-      // Extract impedance if available (openScale algorithm)
-      if (hasImpedance && data.length >= 13) {
-        // Try different impedance extraction methods
-        const impedanceRaw1 = data[9] | (data[10] << 8);
-        const impedanceRaw2 = data[4] | (data[5] << 8);
+      // Tentar extrair impedância se disponível
+      if (data.length >= 10) {
+        // Tentar diferentes posições para impedância
+        const impedancePositions = [
+          { pos: 4, name: 'pos1' },
+          { pos: 6, name: 'pos2' },
+          { pos: 8, name: 'pos3' }
+        ];
         
-        console.log('Impedance candidates:', impedanceRaw1, impedanceRaw2);
-        
-        const impedance = impedanceRaw1 > 0 && impedanceRaw1 < 3000 ? impedanceRaw1 : 
-                         impedanceRaw2 > 0 && impedanceRaw2 < 3000 ? impedanceRaw2 : 0;
-        
-        if (impedance > 0) {
-          console.log('Using impedance:', impedance);
-          result.impedance = impedance;
-          
-          // OpenScale body composition calculation
-          const bodyComposition = this.calculateBodyComposition(weight, impedance, isStabilized);
-          Object.assign(result, bodyComposition);
+        for (const { pos, name } of impedancePositions) {
+          if (data.length > pos + 1) {
+            const impedanceRaw = data[pos] | (data[pos + 1] << 8);
+            if (impedanceRaw > 100 && impedanceRaw < 3000) {
+              console.log(`Impedância encontrada (${name}):`, impedanceRaw);
+              result.impedance = impedanceRaw;
+              
+              // Calcular composição corporal
+              const bodyComposition = this.calculateBodyComposition(weight, impedanceRaw, true);
+              Object.assign(result, bodyComposition);
+              break;
+            }
+          }
         }
       }
 
@@ -281,39 +310,60 @@ export const useBluetoothScale = () => {
         return null;
       }
       
-      // Weight extraction for Mi Scale 2 (different formats)
+      // Análise dos dados brutos: 02 04 e9 07 07 0d 13 13 03 00 00 b6 3a
+      // Baseado na análise dos logs reais, tentar diferentes métodos de extração
       let weight = 0;
+      let foundValidWeight = false;
       
-      // Method 1: Standard BLE Weight Scale format (most accurate for Mi Scale 2)
-      if (data.length >= 6) {
-        const weightRaw = data[1] | (data[2] << 8);
-        weight = weightRaw / 200.0; // kg with 0.005kg precision
-        console.log('Weight method 1 (Standard BLE):', weight);
+      // Método 1: Bytes 11-12 com interpretação little-endian
+      if (data.length >= 13) {
+        const weightBytes = (data[12] << 8) | data[11]; // little-endian
+        const testWeight = weightBytes / 200.0;
+        console.log(`Método 1 - bytes[11-12]: raw=${weightBytes}, peso=${testWeight.toFixed(2)}kg`);
+        if (testWeight > 10 && testWeight < 300) {
+          weight = testWeight;
+          foundValidWeight = true;
+        }
       }
       
-      // Method 2: Xiaomi Mi Scale 2 specific format
-      if ((weight <= 0 || weight > 300) && data.length >= 13) {
-        const weightRaw = data[11] | (data[12] << 8);
-        weight = weightRaw / 200.0; // Changed from 0.005 to match display
-        console.log('Weight method 2 (Xiaomi format):', weight);
+      // Método 2: Bytes 1-2 (dados padrão BLE)
+      if (!foundValidWeight && data.length >= 3) {
+        const weightBytes = (data[2] << 8) | data[1];
+        const testWeight = weightBytes / 200.0;
+        console.log(`Método 2 - bytes[1-2]: raw=${weightBytes}, peso=${testWeight.toFixed(2)}kg`);
+        if (testWeight > 10 && testWeight < 300) {
+          weight = testWeight;
+          foundValidWeight = true;
+        }
       }
       
-      // Method 3: Alternative parsing (exact display match)
-      if ((weight <= 0 || weight > 300) && data.length >= 10) {
-        const weightRaw = data[8] | (data[9] << 8);
-        weight = weightRaw / 200.0; // Consistent with display
-        console.log('Weight method 3 (Alternative):', weight);
+      // Método 3: Bytes 9-10
+      if (!foundValidWeight && data.length >= 11) {
+        const weightBytes = (data[10] << 8) | data[9];
+        const testWeight = weightBytes / 200.0;
+        console.log(`Método 3 - bytes[9-10]: raw=${weightBytes}, peso=${testWeight.toFixed(2)}kg`);
+        if (testWeight > 10 && testWeight < 300) {
+          weight = testWeight;
+          foundValidWeight = true;
+        }
       }
       
-      // Method 4: Direct weight reading (for some scale versions)
-      if ((weight <= 0 || weight > 300) && data.length >= 4) {
-        const weightRaw = data[2] | (data[3] << 8);
-        weight = weightRaw / 100.0;
-        console.log('Weight method 4 (Direct):', weight);
+      // Método 4: Interpretar diretamente de valores decimais nos dados
+      if (!foundValidWeight) {
+        // Tentar encontrar peso nos dados decimais (exemplo: se peso = 75.2kg)
+        for (let i = 0; i < data.length - 1; i++) {
+          const combined = data[i] + (data[i + 1] / 100);
+          if (combined > 10 && combined < 300) {
+            weight = combined;
+            foundValidWeight = true;
+            console.log(`Método 4 - posição ${i}: peso=${weight.toFixed(2)}kg`);
+            break;
+          }
+        }
       }
       
-      if (weight <= 0 || weight > 300) {
-        console.log('Peso inválido após todos os métodos:', weight);
+      if (!foundValidWeight) {
+        console.log('❌ Nenhum peso válido encontrado');
         return null;
       }
       
@@ -466,17 +516,35 @@ export const useBluetoothScale = () => {
             console.log('📊 Dados recebidos via notificação - byteLength:', value.byteLength);
             console.log('Raw bytes:', Array.from(new Uint8Array(value.buffer)).map(b => b.toString(16).padStart(2, '0')).join(' '));
             
-            // Verifica se é uma medição estabilizada antes de processar
+            // Verificar se é uma medição válida baseado nos dados reais
             const data = new Uint8Array(value.buffer);
-            const ctrlByte0 = data[0];
-            const isStabilized = (ctrlByte0 & 0x80) !== 0; // Flag de estabilização
-            const hasWeight = (ctrlByte0 & 0x20) !== 0;
             
-            console.log('Flags - hasWeight:', hasWeight, 'isStabilized:', isStabilized);
+            // Para Mi Scale 2, verificar se temos dados de peso válidos
+            // Analisando os logs: 02 04 e9 07 07 0d 13 13 03 00 00 b6 3a
+            // O peso geralmente está nos bytes 11-12 ou outros padrões
+            let hasValidData = false;
             
-            // Só processar se estiver estabilizado ou se estiver calibrando
-            if (!hasWeight || (!isStabilized && !isCalibrating)) {
-              console.log('⏳ Aguardando estabilização da medição...');
+            // Verificar múltiplas posições para peso
+            const weightPositions = [
+              { pos: 11, scale: 200 }, // Posição padrão Mi Scale 2
+              { pos: 1, scale: 200 },  // Posição alternativa
+              { pos: 9, scale: 100 },  // Outra posição possível
+            ];
+            
+            for (const { pos, scale } of weightPositions) {
+              if (data.length > pos + 1) {
+                const weightRaw = data[pos] | (data[pos + 1] << 8);
+                const weight = weightRaw / scale;
+                if (weight > 5 && weight < 300) { // Peso razoável
+                  hasValidData = true;
+                  console.log(`✅ Peso válido encontrado na posição ${pos}: ${weight.toFixed(1)}kg`);
+                  break;
+                }
+              }
+            }
+            
+            if (!hasValidData && !isCalibrating) {
+              console.log('⏳ Aguardando dados válidos da balança...');
               return;
             }
             
@@ -485,23 +553,32 @@ export const useBluetoothScale = () => {
             if (scaleData && scaleData.weight > 0) {
               console.log('✅ Medição estabilizada - peso:', scaleData.weight);
               
-              // Só aceitar dados estabilizados ou durante calibração com peso válido
-              if (isStabilized || (isCalibrating && scaleData.weight > 10 && scaleData.weight < 300)) {
+              // Aceitar dados válidos durante calibração ou peso estável
+              if (isCalibrating && scaleData.weight > 10 && scaleData.weight < 300) {
                 // Atualizar peso em tempo real
                 setCurrentWeight(scaleData.weight);
                 setLastScaleData(scaleData);
                 
-                // Se estabilizado, mostrar confirmação
-                if (isStabilized) {
-                  setIsShowingConfirmation(true);
-                  setIsCalibrating(false);
-                  
-                  toast({
-                    title: "⚖️ Medição estabilizada!",
-                    description: `${scaleData.weight.toFixed(1)}kg - Confirme se deseja salvar`,
-                    duration: 5000,
-                  });
-                }
+                // Mostrar confirmação após medição válida
+                setIsShowingConfirmation(true);
+                setIsCalibrating(false);
+                
+                toast({
+                  title: "⚖️ Medição capturada!",
+                  description: `${scaleData.weight.toFixed(1)}kg - Confirme se deseja salvar`,
+                  duration: 5000,
+                });
+              } else if (!isCalibrating) {
+                // Durante operação normal, também aceitar dados válidos
+                setCurrentWeight(scaleData.weight);
+                setLastScaleData(scaleData);
+                setIsShowingConfirmation(true);
+                
+                toast({
+                  title: "⚖️ Peso detectado!",
+                  description: `${scaleData.weight.toFixed(1)}kg - Confirme se deseja salvar`,
+                  duration: 5000,
+                });
               }
             }
           } catch (error) {
