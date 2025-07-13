@@ -466,25 +466,43 @@ export const useBluetoothScale = () => {
             console.log('📊 Dados recebidos via notificação - byteLength:', value.byteLength);
             console.log('Raw bytes:', Array.from(new Uint8Array(value.buffer)).map(b => b.toString(16).padStart(2, '0')).join(' '));
             
+            // Verifica se é uma medição estabilizada antes de processar
+            const data = new Uint8Array(value.buffer);
+            const ctrlByte0 = data[0];
+            const isStabilized = (ctrlByte0 & 0x80) !== 0; // Flag de estabilização
+            const hasWeight = (ctrlByte0 & 0x20) !== 0;
+            
+            console.log('Flags - hasWeight:', hasWeight, 'isStabilized:', isStabilized);
+            
+            // Só processar se estiver estabilizado ou se estiver calibrando
+            if (!hasWeight || (!isStabilized && !isCalibrating)) {
+              console.log('⏳ Aguardando estabilização da medição...');
+              return;
+            }
+            
             const scaleData = parseMiScale2Data(value);
             
-            if (scaleData) {
-              console.log('✅ Dados parseados - peso:', scaleData.weight);
+            if (scaleData && scaleData.weight > 0) {
+              console.log('✅ Medição estabilizada - peso:', scaleData.weight);
               
-              // Atualizar peso em tempo real
-              setCurrentWeight(scaleData.weight);
-              setLastScaleData(scaleData);
-              
-              // Mostrar confirmação para aceitar/rejeitar dados
-              setIsShowingConfirmation(true);
-              setIsCalibrating(false);
-              
-              // Toast menos intrusivo para peso em tempo real
-              toast({
-                title: "⚖️ Peso detectado",
-                description: `${scaleData.weight.toFixed(1)}kg - Confirme se deseja salvar`,
-                duration: 3000,
-              });
+              // Só aceitar dados estabilizados ou durante calibração com peso válido
+              if (isStabilized || (isCalibrating && scaleData.weight > 10 && scaleData.weight < 300)) {
+                // Atualizar peso em tempo real
+                setCurrentWeight(scaleData.weight);
+                setLastScaleData(scaleData);
+                
+                // Se estabilizado, mostrar confirmação
+                if (isStabilized) {
+                  setIsShowingConfirmation(true);
+                  setIsCalibrating(false);
+                  
+                  toast({
+                    title: "⚖️ Medição estabilizada!",
+                    description: `${scaleData.weight.toFixed(1)}kg - Confirme se deseja salvar`,
+                    duration: 5000,
+                  });
+                }
+              }
             }
           } catch (error) {
             console.error('Erro ao processar dados da balança:', error);
